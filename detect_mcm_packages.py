@@ -10,19 +10,11 @@
 # 'depends')
 #
 # $1: project top level directory absolute path
-# It creates/updates 2 files (even if they end up being empty), such that the 
-# main latex code and makefile can safely include these:
-# - `<project_dir>/.mcm_package_defs.tex`
-#   -> assuming there is
-# - `<project_dir>/mcm_packages/include_packages.mk` which includes any 
-# `makefile`/`Makefile` that was found in an mcm_package (FUTURE: in dependency 
-# order, if any given in the yml)
-#   -> allows packages to specify make commands that are accessible from the 
-#   project top level, for example for standalone creating a specific tikz 
-#   figure during development
 #
-# TODO: document how exactly this works, and what is created under which 
+# TODO:
+# * document how exactly this works, and what is created under which 
 # circumstances
+# * add gitignore for mcm_packages to external_files
 
 import sys
 import os
@@ -113,7 +105,10 @@ def detect_packages(abs_path_prj_top):
     """
 
     abs_path_mcm_packages = os.path.join(abs_path_prj_top,DIRNAME_MCM_PKGS)
-    l_package_candidate_dirs = os.listdir(abs_path_mcm_packages)
+    if os.path.isdir(abs_path_mcm_packages):
+        l_package_candidate_dirs = os.listdir(abs_path_mcm_packages)
+    else:
+        l_package_candidate_dirs = []
 
     l_mcm_packages = [ \
             McmPackage.from_yaml(os.path.join(abs_path_mcm_packages,x,"mcm_package.yml")) \
@@ -163,11 +158,11 @@ def write_mk_include_pkg(project_dir, l_mcm_packages):
         for package in l_mcm_packages:
             if package.makefile:
                 f_out.write(
-r"include " + os.path.join(package.path, package.makefile) + "\n")
-                f_out.write(
 "DIR_PKG_" + package.name.upper() + "_TOP_ABS := " + os.path.join(project_dir, package.path) + "\n")
                 f_out.write(
 "DIR_PKG_" + package.name.upper() + "_TOP_REL := " + package.path + "\n")
+                f_out.write(
+r"include " + os.path.join(package.path, package.makefile) + "\n")
 
 
 def main(abs_path_prj_top):
