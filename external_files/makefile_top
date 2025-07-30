@@ -18,16 +18,57 @@ TEX_ENGINE			:= pdflatex
 DIR_SCRIPTS 		:= scripts
 
 SCRIPT_INCLUDE_CHAPTERS	:= ${DIR_SCRIPTS}/include_chapters.py
+SCRIPT_DETECT_MCM_PKGS	:= ${DIR_SCRIPTS}/detect_mcm_packages.py
 
 
 ############################################################
 # VARIABLES
 ############################################################
 
-DIR_SRC				:= src
+DIR_PRJ_TOP     	:= $(abspath $(dir $(lastword ${MAKEFILE_LIST})))
+PRJ_NAME        	:= $(notdir ${DIR_PRJ_TOP})
 
-SRC_TEX				:= $(wildcard ${DIR_SRC}/*/*.tex)
-DIR_TEX_OUT			:= tex_out
+# problem here: the makefile MUST use relative paths, because I run latex 
+# through a docker container. Which has access to the working directory, but 
+# can't do anything with absolute paths because of no access to the whole 
+# filesystem.
+DIR_SRC						:= src
+
+SRC_TEX						:= $(wildcard ${DIR_SRC}/*/*.tex)
+DIR_TEX_OUT					:= tex_out
+
+DIR_FIG						:= figures
+DIR_FIG_SRC					:= ${DIR_FIG}/src
+
+# information for myself on how to incorporate wavedrom figures (for now), to 
+# later on put into documentation:
+# * have directories `figures/src/wavedrom/{src,build}` (assuming the path for 
+# figures stays like that)
+# * put your figures in `wavedrom/src` as `myfig.json`
+# * they get compiled into `wavedrom/build/myfig.svg` - either by running the 
+# main target, or by running `make figures_wavedrom`
+DIR_FIG_WAVEDROM			:= ${DIR_FIG_SRC}/wavedrom
+DIR_FIG_WAVEDROM_SRC		:= ${DIR_FIG_WAVEDROM}/src
+DIR_FIG_WAVEDROM_OUT		:= ${DIR_FIG}/build
+# (in case you forget: OBJ is the filename only, FILES is with path)
+# (also, I probably chose one of the more complicated ways to filter for the 
+# file ending .json, while still getting only the filenames, without the 
+# preceeding path. just to, in the next step, add again the path, of course)
+OBJ_WAVEDROM_IN				:= $(shell ls ${DIR_FIG_WAVEDROM_SRC} | grep -E '.*\.json$$' )
+# OBJ_WAVEDROM_IN				:= $(shell ls ${DIR_FIG_WAVEDROM_SRC} | grep -E 'json$$' )
+FILES_WAVEDROM_OUT_SVG		:= $(addprefix ${DIR_FIG_WAVEDROM_OUT}/,$(patsubst %.json,%.svg,${OBJ_WAVEDROM_IN}))
+FILES_WAVEDROM_OUT_PDF		:= $(addprefix ${DIR_FIG_WAVEDROM_OUT}/,$(patsubst %.json,%.pdf,${OBJ_WAVEDROM_IN}))
+
+DUMMY_PREPARE_MCM_PKGS		:= $(shell python3 ${SCRIPT_DETECT_MCM_PKGS} ${DIR_PRJ_TOP})
+
+DIR_MCM_PKGS				:= ${DIR_PRJ_TOP}/mcm_packages
+# DEP_MCM_PKGS				:= $(wildcard ${DIR_MCM_PKGS}/*/mcm_package.yml)
+# DEP_MCM_PKGS				+= $(wildcard ${DIR_MCM_PKGS}/*/makefile)
+# DEP_MCM_PKGS				+= $(wildcard ${DIR_MCM_PKGS}/*/Makefile)
+
+FILE_MK_INCLUDE_MCM_PKGS	:= ${DIR_MCM_PKGS}/include_packages.mk
+FILE_TEX_DEF_MCM_PKGS		:= ${DIR_MCM_PKGS}/mcm_package_defs.tex
+DIR_MCM_TIKZ				:= ${DIR_FIG}/mcm_tikz_figures
 
 
 ############################################################
@@ -36,13 +77,73 @@ DIR_TEX_OUT			:= tex_out
 
 all: ${DOCUMENT}.pdf
 
-${DOCUMENT}.pdf:	${SRC_TEX} include_chapters
+${DOCUMENT}.pdf: ${SRC_TEX} include_chapters figures_wavedrom
 	@echo "Creating the document..."
 	${LATEX} -output-directory=${DIR_TEX_OUT} -${TEX_ENGINE} main.tex
 	@cp ${DIR_TEX_OUT}/main.pdf ${DOCUMENT}.pdf
 
 .PHONY: include_chapters
-include_chapters:	${SRC_TEX}
+include_chapters:				${SRC_TEX}
 	@echo "Scanning for chapters..."
 	@python3 ${SCRIPT_INCLUDE_CHAPTERS}
 
+##############################
+# FIGURES
+##############################
+# TODO: make a wavedrom_clean target -> remove anything from the wavedrom build 
+# directory that doesn't have a source json
+# short explanation for the wavedrom svg/pdf targets:
+# * latex (natively) can't do anything with svg, it needs a pdf
+#     * yes, there's the svg package, that internally converts to pdf, and has 
+#     its own includesvg command. But it relies on other stuff being installed 
+#     on the system, may work better or worse with specific tex engines, didn't 
+#     work first try, long story short: It feels way more maintainable and 
+#     portable to do the conversion manually, and explicitly
+# * there still is the svg target, because first you do different targets for 
+# different compilation steps, and second if at some point you only need the 
+# wavedrom to svg part, there you go
+# * I use inkscape for the conversion 
+# (https://wiki.inkscape.org/wiki/Using_the_Command_Line), copy/pasting their 
+# manual. Seems like there don't really is THE unanimous dead-simple tool that 
+# costs everyone just 5MB to install. I tried to use svg2pdf-cli 
+# (https://github.com/vowstar/svg2pdf-cli), which couldn't find the fonts in the 
+# wavedrom svg, tried inkscape before bothering, worked, end of the story
+#     * still at some point I should make the conversion tool parameterizable in 
+#     this makefile, maybe via function (that the user could then override with 
+#     the same signature, wrapping another tool)
+
+.PHONY: figures_wavedrom
+figures_wavedrom:		${FILES_WAVEDROM_OUT_PDF}
+
+${DIR_FIG_WAVEDROM_OUT}/%.pdf: ${DIR_FIG_WAVEDROM_OUT}/%.svg
+	@cat $< | inkscape --pipe --export-filename=$@
+
+# (the absolute standard "source to object" rule - nicely ensures that only 
+# out-of-date figures get rebuilt)
+${DIR_FIG_WAVEDROM_OUT}/%.svg: ${DIR_FIG_WAVEDROM_SRC}/%.json
+	@wavedrom -i $< -o $@
+
+# # note that this method does have a noteworthy flaw: A change to 
+# # ${FILE_MK_INCLUDE_MCM_PKGS} will only have effect on the NEXT invokation of 
+# # make, because it affects makefiles being included. So either you first run 
+# # this target, and then in a second make process run whatever make target was 
+# # actually invoked (don't know if you can do this sort of "pre-run hook", or you 
+# # just know that you have to run `make mcm_packages` once after changing 
+# # anything about the packages. Which shouldn't be too often after all.
+# .PHONY: mcm_packages
+# mcm_packages: ${FILE_MK_INCLUDE_MCM_PKGS} ${FILE_TEX_DEF_MCM_PKGS}
+# 
+# ${FILE_MK_INCLUDE_MCM_PKGS}:	${DEP_MCM_PKGS}
+# 	@python3 ${SCRIPT_DETECT_MCM_PKGS} ${DIR_PRJ_TOP}
+# 
+# ${FILE_TEX_DEF_MCM_PKGS}:		${DEP_MCM_PKGS}
+# 	@python3 ${SCRIPT_DETECT_MCM_PKGS} ${DIR_PRJ_TOP}
+
+ifneq (,$(wildcard ${DIR_MCM_PKGS}))
+include ${FILE_MK_INCLUDE_MCM_PKGS}
+endif
+
+.PHONY: debug
+debug:
+	@echo ${OBJ_WAVEDROM_IN}
+	@echo ${FILES_WAVEDROM_OUT}
